@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>Limpiador CSV a Texto Plano</title>
+  <style>
+    body { font-family: Segoe UI, sans-serif; max-width: 820px; margin: 40px auto; padding: 0 20px; background: #f4f6f9; color: #1f2937; }
+    .card { background: #fff; padding: 24px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.08); }
+    h1 { margin-top: 0; font-size: 1.4rem; }
+    .controls { display: flex; flex-wrap: wrap; gap: 16px; margin: 16px 0; align-items: center; }
+    label { font-size: 0.9rem; font-weight: 600; }
+    select, input[type="file"] { padding: 6px 10px; border: 1px solid #cbd5e1; border-radius: 6px; }
+    button { background: #0f6cbd; color: #fff; border: none; padding: 10px 18px; border-radius: 6px; font-weight: 600; cursor: pointer; }
+    button:disabled { background: #94a3b8; cursor: not-allowed; }
+    .stats { margin-top: 14px; font-size: 0.9rem; color: #047857; font-weight: 600; }
+    pre { background: #0f172a; color: #e2e8f0; padding: 14px; border-radius: 6px; overflow-x: auto; font-size: 0.82rem; margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Limpiador de CSV a Texto Plano (Separador Coma)</h1>
+    <input type="file" id="fileInput" accept=".csv,.txt" />
+
+    <div class="controls">
+      <div>
+        <label for="encoding">Codificación origen:</label>
+        <select id="encoding">
+          <option value="UTF-8">UTF-8 (Estándar)</option>
+          <option value="windows-1252">ANSI / Windows-1252 (Excel viejo)</option>
+        </select>
+      </div>
+      <div>
+        <label for="delimiter">Separador origen:</label>
+        <select id="delimiter">
+          <option value="auto">Detectar automático</option>
+          <option value=",">Coma (,)</option>
+          <option value=";">Punto y coma (;)</option>
+        </select>
+      </div>
+      <div>
+        <label>
+          <input type="checkbox" id="keepDot" /> Conservar punto decimal (.)
+        </label>
+      </div>
+    </div>
+
+    <button id="processBtn" disabled>Limpiar y Descargar CSV</button>
+    <div id="stats" class="stats"></div>
+    <pre id="preview">Sube un archivo CSV para ver una vista previa limpia (primeras 5 filas)...</pre>
+  </div>
+
+  <script>
+    const fileInput = document.getElementById('fileInput');
+    const processBtn = document.getElementById('processBtn');
+    const preview = document.getElementById('preview');
+    const stats = document.getElementById('stats');
+    let selectedFile = null;
+
+    fileInput.addEventListener('change', (e) => {
+      selectedFile = e.target.files[0];
+      processBtn.disabled = !selectedFile;
+      stats.textContent = '';
+    });
+
+    // Parser RFC-4180 ligero: evita que las comas dentro de comillas rompan columnas
+    function parseCSV(text, delimiter) {
+      const rows = [];
+      let row = [], cell = '', inQuotes = false;
+
+      for (let i = 0; i < text.length; i++) {
+        const c = text[i], next = text[i + 1];
+        if (inQuotes) {
+          if (c === '"' && next === '"') { cell += '"'; i++; }
+          else if (c === '"') { inQuotes = false; }
+          else { cell += c; }
+        } else {
+          if (c === '"') { inQuotes = true; }
+          else if (c === delimiter) { row.push(cell); cell = ''; }
+          else if (c === '\r' && next === '\n') { row.push(cell); rows.push(row); row = []; cell = ''; i++; }
+          else if (c === '\n' || c === '\r') { row.push(cell); rows.push(row); row = []; cell = ''; }
+          else { cell += c; }
+        }
+      }
+      if (cell.length > 0 || row.length > 0) { row.push(cell); rows.push(row); }
+      return rows;
+    }
+
+    function detectarSeparador(texto) {
+      const primeraLinea = texto.split(/\r?\n/)[0] || '';
+      const comas = (primeraLinea.match(/,/g) || []).length;
+      const puntosYComa = (primeraLinea.match(/;/g) || []).length;
+      return puntosYComa > comas ? ';' : ',';
+    }
+
+    function limpiarCelda(valor, permitirPunto) {
+      if (!valor) return '';
+      const sinMojibake = valor
+        .replace(/â€¹|â€/g, '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '');
+
+      const regex = permitirPunto ? /[^A-Za-z0-9 .]/g : /[^A-Za-z0-9 ]/g;
+      return sinMojibake.replace(regex, '').replace(/\s+/g, ' ').trim();
+    }
+
+    processBtn.addEventListener('click', () => {
+      if (!selectedFile) return;
+      const reader = new FileReader();
+      const encoding = document.getElementById('encoding').value;
+      const delimOpt = document.getElementById('delimiter').value;
+      const keepDot = document.getElementById('keepDot').checked;
+
+      reader.onload = (e) => {
+        const rawText = e.target.result.replace(/^\uFEFF/, ''); // Elimina BOM si existe
+        const delimiter = delimOpt === 'auto' ? detectarSeparador(rawText) : delimOpt;
+        const rows = parseCSV(rawText, delimiter);
+
+        const cleanedRows = rows.map(r => r.map(c => limpiarCelda(c, keepDot)));
+        const csvOutput = cleanedRows.map(r => r.join(',')).join('\r\n');
+
+        preview.textContent = cleanedRows.slice(0, 5).map(r => r.join(',')).join('\n');
+        stats.textContent = `Procesadas ${cleanedRows.length} filas | Separador origen detectado: "${delimiter}" | Exportado con coma (,)`;
+
+        const blob = new Blob([csvOutput], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = selectedFile.name.replace(/\.[^.]+$/, '') + '_limpio.csv';
+        a.click();
+        URL.revokeObjectURL(url);
+      };
+
+      reader.readAsText(selectedFile, encoding);
+    });
+  </script>
+</body>
+</html>
